@@ -1,5 +1,8 @@
 import ast
 from datetime import datetime
+from typing import List
+import json
+import re
 
 import pandas as pd
 
@@ -316,3 +319,34 @@ def cleaning(dataframe: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
+def explode_dict_columns(dataframe: pd.DataFrame, dict_columns: List[str]) -> pd.DataFrame:
+    """
+    Éclate les colonnes contenant des dictionnaires en plusieurs colonnes distinctes.
+
+    :param dataframe: Le DataFrame initial.
+    :param dict_columns: Liste des noms de colonnes à éclater.
+    :return: Un nouveau DataFrame avec les colonnes éclatées.
+    """
+    # Créer une copie du DataFrame pour éviter de modifier l'original
+    dataframe = dataframe.copy()
+
+    for column in dict_columns:
+        if column in dataframe.columns:
+            # Convertir les chaînes JSON en dictionnaires Python
+            dataframe[column] = dataframe[column].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+
+            # Éclater la colonne de dictionnaire en plusieurs colonnes
+            df_expanded = pd.json_normalize(dataframe[column])
+
+            # Concaténer les colonnes éclatées avec le DataFrame original
+            dataframe = pd.concat([dataframe.drop(column, axis=1), df_expanded], axis=1)
+        else:
+            print(f"Colonne {column} non trouvée dans le DataFrame.")
+
+    return dataframe
+
+
+def fix_missing_quotes(s):
+    # Ajouter un guillemet manquant au début des clés
+    corrected = re.sub(r'(\{|,)\s*(\w+)":', r'\1 "\2":', s)
+    return corrected

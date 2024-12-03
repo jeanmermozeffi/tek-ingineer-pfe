@@ -1,0 +1,137 @@
+services:
+    host-pfe-db:
+        build:
+            context: ./docker/postgres
+        image: postgres:16
+        container_name: host-pfe-db
+        env_file:
+            - .env
+        ports:
+            - "${POSTGRES_PORT}:5432"
+        expose:
+            - "${POSTGRES_PORT}"
+        environment:
+            POSTGRES_DB: pfe-db-monitoring
+            POSTGRES_USER: mlflowAdmin
+            POSTGRES_PASSWORD: Admin123
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+#            - ./docker/postgres/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+        restart: unless-stopped
+        networks:
+            - app-network
+    
+    minio:
+        image: minio/minio:latest
+        container_name: minio_pfe_s3
+        env_file:
+            - .env
+        expose:
+            - "9000"
+        ports:
+            - "${MINIO_PORT}:9000"
+            - "${MINIO_CONSOLE_PORT}:9001"
+        environment:
+            MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+            MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+            MINIO_ADDRESS: ${MINIO_ADDRESS}
+            MINIO_PORT: ${MINIO_PORT}
+            MINIO_STORAGE_USE_HTTPS: ${MINIO_STORAGE_USE_HTTPS}
+            MINIO_CONSOLE_ADDRESS: ${MINIO_CONSOLE_ADDRESS}
+        volumes:
+            - ./.storage/minio_data:/data
+        command: server /data --console-address ':9001' --address ':9000'
+        restart: unless-stopped
+        healthcheck:
+            test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
+            interval: 1s
+            timeout: 10s
+            retries: 5
+        networks:
+            - app-network
+            
+    # Create a bucket named "bucket" if it doesn't exist
+    minio-create-bucket:
+        build:
+            context: ./docker/mc_custom
+        image: mc_custom
+        container_name: mc_bucket
+        env_file:
+            - .env
+        depends_on:
+            minio:
+                condition: service_healthy
+#        volumes:
+#            - ./docker/mc_custom/create_bucket.sh:/usr/local/bin/create_bucket.sh
+#        entrypoint: >
+#            sh -c "
+#            chmod +x /usr/local/bin/create_bucket.sh &&
+#            /usr/local/bin/create_bucket.sh
+#            "
+        networks:
+            - app-network
+        
+    mlflow-tracking-server:
+        build:
+            context: ./docker/mlflow
+            args:
+                - MLFLOW_VERSION=${MLFLOW_VERSION}
+        image: mlflow_server
+        container_name: mlflow_server
+        depends_on:
+            - host-pfe-db
+            - minio-create-bucket
+        environment:
+            MLFLOW_TRACKING_SERVER_HOST: ${MLFLOW_TRACKING_SERVER_HOST}
+            MLFLOW_TRACKING_SERVER_PORT: ${MLFLOW_TRACKING_SERVER_PORT}
+            MLFLOW_ARTIFACT_STORE: ${MLFLOW_ARTIFACT_STORE}
+            MLFLOW_BACKEND_STORE: ${MLFLOW_BACKEND_STORE}
+            MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+            AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+            AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY}
+            MLFLOW_S3_IGNORE_TLS: true
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            POSTGRES_DATABASE: ${POSTGRES_DB}
+            POSTGRES_PORT: ${POSTGRES_PORT}
+        volumes:
+            - ./${MLFLOW_ARTIFACT_STORE}:/${MLFLOW_ARTIFACT_STORE}
+        ports:
+            - "${MLFLOW_PORT}:5000"
+        command: >
+            mlflow server
+            --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${MLFLOW_BACKEND_STORE}:${POSTGRES_PORT}/${POSTGRES_DB}
+            --default-artifact-root s3://mlflow
+            --artifacts-destination s3://mlflow
+            --serve-artifacts
+            --host ${MLFLOW_TRACKING_SERVER_HOST}
+            --port ${MLFLOW_TRACKING_SERVER_PORT}
+        expose:
+            - "${MLFLOW_PORT}"
+        env_file:
+            - .env
+        restart: unless-stopped
+        healthcheck:
+            test: [ "CMD", "curl", "-f", "http://127.0.0.1:${MLFLOW_PORT}/" ]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+        networks:
+            - app-network
+
+    pgadmin:
+        image: dpage/pgadmin4
+        container_name: pgadmin_modele_pfe
+        environment:
+            - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+            - PGADMIN_DEFAULT_PASSWORD=root
+        ports:
+            - "8080:80"
+        networks:
+            - app-network
+volumes:
+    postgres_data:
+
+networks:
+    app-network:
+        driver: bridge
